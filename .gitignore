@@ -1,0 +1,8 @@
+__pycache__
+**/*.ckpt
+wandb
+checkpoints
+data
+**/*.pth
+**/*.bin
+**/*png

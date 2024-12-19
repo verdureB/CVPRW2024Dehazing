@@ -1,9 +1,6 @@
 import os
-import glob
 import torch
-from PIL import Image
 import cv2
-import numpy as np
 import random
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
@@ -39,7 +36,7 @@ class Dataset(torch.utils.data.Dataset):
         self.dataset_root = opt.dataset_root
         self.transform = transform
         self.dataset_root = os.path.join(self.dataset_root, self.phase)
-        self.image_list = os.listdir(os.path.join(self.dataset_root, "clean"))
+        self.image_list = os.listdir(os.path.join(self.dataset_root, "gt"))
         random.shuffle(self.image_list)
         self.load_images_in_parallel()
 
@@ -63,10 +60,10 @@ class Dataset(torch.utils.data.Dataset):
             return images
 
         self.input_list = load_images(
-            self.image_list, os.path.join(self.dataset_root, "hazy")
+            self.image_list, os.path.join(self.dataset_root, "input")
         )
         self.target_list = load_images(
-            self.image_list, os.path.join(self.dataset_root, "clean")
+            self.image_list, os.path.join(self.dataset_root, "gt")
         )
 
     def __getitem__(self, index):
@@ -86,7 +83,7 @@ class Dataset(torch.utils.data.Dataset):
 
 def get_dataloader(opt):
     train_dataset = Dataset(phase="train", opt=opt, transform=train_transform)
-    valid_dataset = Dataset(phase="test_new", opt=opt, transform=valid_transform)
+    valid_dataset = Dataset(phase="val", opt=opt, transform=valid_transform)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=opt.batch_size,

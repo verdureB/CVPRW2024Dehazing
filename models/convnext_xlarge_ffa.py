@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import trunc_normal_, DropPath
 from models.head import *
-from models.swintransformer_v2 import SwinTransformerV2
 
 
 class ConvNeXt0(nn.Module):
@@ -279,7 +278,8 @@ class CP_Attention_block(nn.Module):
         self.palayer = PALayer(dim)
 
     def forward(self, x):
-        res = self.act1(self.conv1(x))
+        res = self.conv1(x)
+        res = self.act1(res)
         res = res + x
         res = self.conv2(res)
         res = self.calayer(res)
@@ -317,20 +317,14 @@ class knowledge_adaptation_convnext(nn.Module):
             layer_scale_init_value=1e-6,
             head_init_scale=1.0,
         )
-        # pretrained_model=nn.DataParallel(pretrained_model)
         checkpoint = torch.load("./models/convnext_xlarge_22k_1k_384_ema.pth")
-        # for k,v in checkpoint["model"].items():
-        # print(k)
-        # url="https://dl.fbaipublicfiles.com/convnext/convnext_large_1k_384.pth"
-
-        # checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cuda:0")
         pretrained_model.load_state_dict(checkpoint["model"])
 
         pretrained_dict = pretrained_model.state_dict()
         model_dict = self.encoder.state_dict()
         key_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
         model_dict.update(key_dict)
-        self.encoder.load_state_dict(model_dict)
+        # self.encoder.load_state_dict(model_dict)
 
         self.up_block = nn.PixelShuffle(2)
         self.attention0 = CP_Attention_block(default_conv, 1024, 3)
@@ -339,18 +333,17 @@ class knowledge_adaptation_convnext(nn.Module):
         self.attention3 = CP_Attention_block(default_conv, 112, 5)
         self.attention4 = CP_Attention_block(default_conv, 28, 5)
 
-    def forward(self, input):
-        x_layer1, x_layer2, x_output = self.encoder(input)
-
+    def forward(self, inputs):
+        x_layer1, x_layer2, x_output = self.encoder(inputs)
         x_mid = self.attention0(x_output)  # [1024,24,24]
 
         x = self.up_block(x_mid)  # [256,48,48]
         x = self.attention1(x)
 
         x = torch.cat((x, x_layer2), 1)  # [768,48,48]
-
         x = self.up_block(x)  # [192,96,96]
         x = self.attention2(x)
+
         x = torch.cat((x, x_layer1), 1)  # [448,96,96]
         x = self.up_block(x)  # [112,192,192]
         x = self.attention3(x)
@@ -361,265 +354,43 @@ class knowledge_adaptation_convnext(nn.Module):
         return out
 
 
-class knowledge_adaptation_swinv2(nn.Module):
-    def __init__(self):
-        super(knowledge_adaptation_swinv2, self).__init__()
-        self.encoder = timm.create_model(
-            "swinv2_large_window12to16_192to256", features_only=True
-        )
-
-        self.up_block = nn.PixelShuffle(2)
-        self.attention0 = CP_Attention_block(default_conv, 768, 3)
-        self.attention1 = CP_Attention_block(default_conv, 192, 3)
-        self.attention2 = CP_Attention_block(default_conv, 144, 3)
-        self.attention3 = CP_Attention_block(default_conv, 84, 5)
-        self.attention4 = CP_Attention_block(default_conv, 21, 5)
-
-    def forward(self, input):
-        x_layer1, x_layer2, x_output, _ = self.encoder(input)
-        x_layer1 = x_layer1.permute(0, 3, 1, 2)
-        x_layer2 = x_layer2.permute(0, 3, 1, 2)
-        x_output = x_output.permute(0, 3, 1, 2)
-
-        x_mid = self.attention0(x_output)  # [768,24,24]
-
-        x = self.up_block(x_mid)  # [192,48,48]
-        x = self.attention1(x)
-        x = torch.cat((x, x_layer2), 1)  # [576,48,48]
-
-        x = self.up_block(x)  # [144,96,96]
-        x = self.attention2(x)
-        x = torch.cat((x, x_layer1), 1)  # [336,96,96]
-
-        x = self.up_block(x)  # [84,192,192]
-        x = self.attention3(x)
-        x = self.up_block(x)  # [21,384,384]
-        out = self.attention4(x)
-
-        return out
-
-
 class convnext_plus_head(nn.Module):
-    def __init__(self, type="convnext"):
+    def __init__(self):
         super(convnext_plus_head, self).__init__()
-        if type == "convnext":
-            self.convnext_branch = knowledge_adaptation_convnext()
-            self.segmentation_head = mscheadv5(28)
-        else:
-            self.convnext_branch = knowledge_adaptation_swinv2()
-            self.segmentation_head = mscheadv5(21)
+        self.convnext_branch = knowledge_adaptation_convnext()
+        self.segmentation_head = mscheadv5(28)
 
-    def forward(self, input):
-        x_convnext = self.convnext_branch(input)
+    def forward(self, inputs):
+        x_convnext = self.convnext_branch(inputs)
         pred = self.segmentation_head(x_convnext)
         return pred
 
 
-## from ITB
-
-
-def default_conv(in_channels, out_channels, kernel_size, bias=True):
-    return nn.Conv2d(
-        in_channels, out_channels, kernel_size, padding=(kernel_size // 2), bias=bias
-    )
-
-
-class DehazeBlock(nn.Module):
-    def __init__(self, conv, dim, kernel_size):
-        super(DehazeBlock, self).__init__()
-
-        self.conv1 = conv(dim, dim, kernel_size, bias=True)
-        self.act1 = nn.ReLU(inplace=True)
-        self.conv2 = conv(dim, dim, kernel_size, bias=True)
-        self.calayer = CALayer(dim)
-        self.palayer = PALayer(dim)
-
-    def forward(self, x):
-        res = self.act1(self.conv1(x))
-        res = res + x
-        res = self.conv2(res)
-        res = self.calayer(res)
-        res = self.palayer(res)
-        res += x
-
-        return res
-
-
-class Enhancer(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(Enhancer, self).__init__()
-
-        self.relu = nn.LeakyReLU(0.2, inplace=True)
-
-        self.tanh = nn.Tanh()
-
-        self.refine1 = nn.Conv2d(in_channels, 20, kernel_size=3, stride=1, padding=1)
-        self.refine2 = nn.Conv2d(20, 20, kernel_size=3, stride=1, padding=1)
-
-        self.conv1010 = nn.Conv2d(20, 1, kernel_size=1, stride=1, padding=0)
-        self.conv1020 = nn.Conv2d(20, 1, kernel_size=1, stride=1, padding=0)
-        self.conv1030 = nn.Conv2d(20, 1, kernel_size=1, stride=1, padding=0)
-        self.conv1040 = nn.Conv2d(20, 1, kernel_size=1, stride=1, padding=0)
-
-        self.refine3 = nn.Conv2d(
-            20 + 4, out_channels, kernel_size=3, stride=1, padding=1
-        )
-        self.upsample = F.upsample_nearest
-
-        self.batch1 = nn.InstanceNorm2d(100, affine=True)
-
-    def forward(self, x):
-        dehaze = self.relu((self.refine1(x)))
-        dehaze = self.relu((self.refine2(dehaze)))
-        shape_out = dehaze.data.size()
-
-        shape_out = shape_out[2:4]
-
-        x101 = F.avg_pool2d(dehaze, 32)
-
-        x102 = F.avg_pool2d(dehaze, 16)
-
-        x103 = F.avg_pool2d(dehaze, 8)
-
-        x104 = F.avg_pool2d(dehaze, 4)
-
-        x1010 = self.upsample(self.relu(self.conv1010(x101)), size=shape_out)
-        x1020 = self.upsample(self.relu(self.conv1020(x102)), size=shape_out)
-        x1030 = self.upsample(self.relu(self.conv1030(x103)), size=shape_out)
-        x1040 = self.upsample(self.relu(self.conv1040(x104)), size=shape_out)
-
-        dehaze = torch.cat((x1010, x1020, x1030, x1040, dehaze), 1)
-        dehaze = self.tanh(self.refine3(dehaze))
-
-        return dehaze
-
-
-class DehazeSwinT(nn.Module):
-    def __init__(self, imagenet_model):
-        super(DehazeSwinT, self).__init__()
-
-        checkpoint = torch.load(
-            "models/swinv2_base_patch4_window8_256.pth", map_location="cpu"
-        )
-        imagenet_model.load_state_dict(checkpoint["model"])
-        self.encoder = imagenet_model
-
-        # Incorporate with SwinTransformerV2
-        self.mid_conv = DehazeBlock(default_conv, 1024, 3)
-
-        self.up_block1 = nn.PixelShuffle(2)
-        self.attention1 = DehazeBlock(default_conv, 256, 3)
-        self.attention2 = DehazeBlock(default_conv, 192, 3)
-        self.attention3 = DehazeBlock(default_conv, 112, 3)
-        # self.enhancer = Enhancer(15, 15)
-
-    def forward(self, input):
-        x, layer_feature = self.encoder(
-            input
-        )  # [0-2]: [4096,128] [1024,256] [256,512]  [3]=x: [64,1024]
-
-        # change dimension
-        x, feature1, feature2, feature3 = (
-            x.transpose(1, 2),
-            layer_feature[0].transpose(1, 2),
-            layer_feature[1].transpose(1, 2),
-            layer_feature[2].transpose(1, 2),
-        )
-        x = torch.reshape(
-            x,
-            (
-                x.shape[0],
-                x.shape[1],
-                int(np.sqrt(x.shape[2])),
-                int(np.sqrt(x.shape[2])),
-            ),
-        )
-        feature1 = torch.reshape(
-            feature1,
-            (
-                feature1.shape[0],
-                feature1.shape[1],
-                int(np.sqrt(feature1.shape[2])),
-                int(np.sqrt(feature1.shape[2])),
-            ),
-        )
-        feature2 = torch.reshape(
-            feature2,
-            (
-                feature2.shape[0],
-                feature2.shape[1],
-                int(np.sqrt(feature2.shape[2])),
-                int(np.sqrt(feature2.shape[2])),
-            ),
-        )
-        feature3 = torch.reshape(
-            feature3,
-            (
-                feature3.shape[0],
-                feature3.shape[1],
-                int(np.sqrt(feature3.shape[2])),
-                int(np.sqrt(feature3.shape[2])),
-            ),
-        )
-
-        x_mid = self.mid_conv(x)  # [8, 1024, 8, 8] = [8, 1024, 8, 8]
-
-        x = self.up_block1(x_mid)  # [8, 256, 16, 16] = [8, 1024, 8, 8]
-        x = self.attention1(x)
-
-        x = torch.cat((x, feature3), 1)  # [8, 768, 16, 16]
-        x = self.up_block1(x)  # [8, 192, 32, 32]
-        x = self.attention2(x)
-
-        x = torch.cat((x, feature2), 1)  # [8, 448, 32, 32] = 192+256
-        x = self.up_block1(x)  # [8, 112, 64, 64]
-        x = self.attention3(x)
-
-        x = torch.cat((x, feature1), 1)  # [8, 240, 64, 64] = 112+128
-        x = self.up_block1(x)
-        x = self.up_block1(x)
-
-        # dout2 = self.enhancer(x)
-
-        return x
-
-
-class fuse_convnext_swinv2(nn.Module):
+class Sequential_ConvNeXt(nn.Module):
     def __init__(self):
-        super(fuse_convnext_swinv2, self).__init__()
-        self.convnext_branch = knowledge_adaptation_convnext()
-        self.swinv2_branch = DehazeSwinT(
-            SwinTransformerV2(
-                img_size=256,
-                patch_size=4,
-                in_chans=3,
-                num_classes=1000,
-                embed_dim=128,
-                depths=[2, 2, 18, 2],
-                num_heads=[4, 8, 16, 32],
-                window_size=8,
-                mlp_ratio=4.0,
-                qkv_bias=True,
-                drop_rate=0.0,
-                drop_path_rate=0.5,
-                ape=False,
-                patch_norm=True,
-                use_checkpoint=False,
-                pretrained_window_sizes=[0, 0, 0, 0],
-            )
-        )
-        self.segmentation_head = mscheadv5(28 + 15)
+        super(Sequential_ConvNeXt, self).__init__()
+        self.encoder1 = convnext_plus_head()
+        self.encoder2 = convnext_plus_head()
+        ckpt = torch.load(
+            "/home/ubuntu/Competition/LowLevel/dehaze_data/checkpoints/v7_L1_noLPIPSed/epoch=5819-valid_psnr=22.2865.ckpt",
+            map_location="cpu",
+        )["state_dict"]
+        for k in list(ckpt.keys()):
+            if "model." not in k:
+                ckpt.pop(k)
+            else:
+                ckpt[k.replace("model.", "")] = ckpt.pop(k)
+        self.encoder1.load_state_dict(ckpt, strict=False)
+        self.encoder2.load_state_dict(ckpt, strict=False)
 
-    def forward(self, input):
-        x_convnext = self.convnext_branch(input)
-        x_swinv2 = self.swinv2_branch(input)
-        x_fuse = torch.cat((x_convnext, x_swinv2), 1)
-        pred = self.segmentation_head(x_fuse)
-        return pred
+    def forward(self, inputs):
+        x1 = self.encoder1(inputs)
+        x2 = self.encoder2(x1)
+        return x2
 
 
 if __name__ == "__main__":
-    model = fuse_convnext_swinv2()
+    model = convnext_plus_head()
     input = torch.randn(2, 3, 256, 256)
     out = model(input)
     for o in out:

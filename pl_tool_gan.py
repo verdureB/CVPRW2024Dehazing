@@ -1,13 +1,9 @@
 import torch
 import lightning.pytorch as pl
-import torch.nn.functional as F
-from lion_pytorch import Lion
-import numpy as np
 from models.head import *
 import torchmetrics as tm
 from torch.optim import AdamW
-from models.DNet import Discriminator, TransCNN
-from utils import CharbonnierLoss, swinv2_small_window8_256_lpips
+from utils import CharbonnierLoss, LPIPS
 import torchvision
 from pytorch_msssim import msssim
 
@@ -21,23 +17,12 @@ class LightningModule(pl.LightningModule):
         self.len_trainloader = len_trainloader
         self.opt = opt
         self.model = model
-        # self.DNet = TransCNN()
         self.DNet = torchvision.models.densenet201(num_classes=1)
-        self.swinv2_lpips = swinv2_small_window8_256_lpips()
+        self.lpips = LPIPS()
         self.l1loss = torch.nn.SmoothL1Loss()
         self.adversarial_loss = torch.nn.BCEWithLogitsLoss()
         self.automatic_optimization = False
         self.msssim_loss = msssim
-        ckpt = torch.load(
-            "checkpoints/convnext_new_valid_resample_400_3_3e-5_swinv2_lpips_mixup_0.001_0.004/epoch=575-valid_psnr=23.9169.ckpt",
-            map_location="cpu",
-        )["state_dict"]
-        for k in list(ckpt.keys()):
-            if "model." not in k:
-                ckpt.pop(k)
-            else:
-                ckpt[k.replace("model.", "")] = ckpt.pop(k)
-        self.model.load_state_dict(ckpt)
 
     def forward(self, x):
         pred = self.model(x)
@@ -87,11 +72,10 @@ class LightningModule(pl.LightningModule):
         l1loss = self.l1loss(pred, y)
         g_loss = self.adversarial_loss(self.DNet(pred), valid)
         msssim_loss = -self.msssim_loss(pred, y, normalize=True)
-        lpips_loss = self.swinv2_lpips(pred, y)
+        lpips_loss = self.lpips(pred, y)
         loss = (
             l1loss
-            + 10 * (
-            ) * (g_loss)
+            + 10 * (self.scheduler.get_last_lr()[0]) * (g_loss)
             + 0.5 * msssim_loss
             + 0.1 * lpips_loss
         )
@@ -150,11 +134,3 @@ class LightningModule(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         pass
-
-    def mixup(self, hazy, clean):
-        alpha = torch.normal(
-            0.01, 0.03, size=(hazy.size(0), 1, 1, 1), device=hazy.device
-        )
-        alpha = torch.clip(alpha, 0.0, 1.0)
-        mixed_x = alpha * clean + (1 - alpha) * hazy
-        return mixed_x

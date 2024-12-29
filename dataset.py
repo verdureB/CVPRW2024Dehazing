@@ -13,17 +13,18 @@ opt = get_option()
 train_transform = A.Compose(
     [
         A.RandomCrop(opt.image_size, opt.image_size),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
+        # A.D4(),
+        # A.RandomGamma(),
         ToTensorV2(transpose_mask=True),
     ]
 )
 
 valid_transform = A.Compose(
     [
-        A.PadIfNeeded(4096, 4096, border_mode=cv2.BORDER_CONSTANT),
-        A.CenterCrop(4096, 4096),
+        A.PadIfNeeded(
+            opt.valid_image_size, opt.valid_image_size, border_mode=cv2.BORDER_REFLECT
+        ),
+        A.CenterCrop(opt.valid_image_size, opt.valid_image_size),
         ToTensorV2(transpose_mask=True),
     ]
 )
@@ -37,7 +38,6 @@ class Dataset(torch.utils.data.Dataset):
         self.transform = transform
         self.dataset_root = os.path.join(self.dataset_root, self.phase)
         self.image_list = os.listdir(os.path.join(self.dataset_root, "gt"))
-        random.shuffle(self.image_list)
         self.load_images_in_parallel()
 
     def load_image(self, path):
@@ -75,7 +75,10 @@ class Dataset(torch.utils.data.Dataset):
             high_image = transformed["mask"]
         low_image = low_image / 127.5 - 1.0
         high_image = high_image / 127.5 - 1.0
-        return low_image.float(), high_image.float()
+        if random.random() < self.opt.ori_image_rate and self.phase == "train":
+            return high_image.float(), high_image.float()
+        else:
+            return low_image.float(), high_image.float()
 
     def __len__(self):
         return len(self.image_list)
@@ -94,7 +97,7 @@ def get_dataloader(opt):
     )
     valid_dataloader = torch.utils.data.DataLoader(
         valid_dataset,
-        batch_size=opt.batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=opt.num_workers,
         pin_memory=True,

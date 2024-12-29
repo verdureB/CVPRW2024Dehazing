@@ -1,10 +1,10 @@
 import torch
 from option import get_option
+import os
 from dataset import *
 from pl_tool_gan import *
 import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
-import torch
 import wandb
 
 torch.set_float32_matmul_precision("high")
@@ -46,7 +46,7 @@ if __name__ == "__main__":
         accumulate_grad_batches=1,
         callbacks=[
             pl.callbacks.ModelCheckpoint(
-                dirpath=f"./checkpoints/" + opt.exp_name,
+                dirpath="./checkpoints/" + opt.exp_name,
                 monitor="valid_psnr",
                 mode="max",
                 save_top_k=1,
@@ -55,7 +55,8 @@ if __name__ == "__main__":
             ),
         ],
     )
-
+    if not os.path.exists("./checkpoints/" + opt.exp_name + "/training_image"):
+        os.makedirs("./checkpoints/" + opt.exp_name + "/training_image")
     # Start training
     trainer.fit(
         LightningModule(opt, model, len(train_dataloader)),

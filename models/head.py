@@ -91,13 +91,23 @@ class mscheadv5(nn.Module):
     def __init__(self, in_channels):
         super(mscheadv5, self).__init__()
         self.in_channels = in_channels
-        self.head1 = nn.Conv2d(in_channels, in_channels, 1, 1, 0)
-        self.head2 = nn.Conv2d(in_channels, in_channels, 3, 1, 1)
-        self.head3 = nn.Conv2d(in_channels, in_channels, 5, 1, 2)
-        self.head4 = nn.Conv2d(in_channels, in_channels, 7, 1, 3)
-        self.sk = SKFusionv2(in_channels, height=4, kernel_size=7)
+        self.head1 = nn.Conv2d(
+            in_channels, in_channels, 1, 1, 0, padding_mode=PADDING_MODE
+        )
+        self.head2 = nn.Conv2d(
+            in_channels, in_channels, 3, 1, 1, padding_mode=PADDING_MODE
+        )
+        self.head3 = nn.Conv2d(
+            in_channels, in_channels, 5, 1, 2, padding_mode=PADDING_MODE
+        )
+        self.head4 = nn.Conv2d(
+            in_channels, in_channels, 7, 1, 3, padding_mode=PADDING_MODE
+        )
+        self.sk = SKFusionv2(
+            in_channels, height=4, kernel_size=7, padding_mode=PADDING_MODE
+        )
         self.b = nn.Sequential(
-            nn.Conv2d(in_channels * 5, 3, 7, 1, 3, padding_mode="reflect"), nn.Tanh()
+            nn.Conv2d(in_channels * 5, 3, 7, 1, 3, padding_mode=PADDING_MODE), nn.Tanh()
         )
 
     def forward(self, x):

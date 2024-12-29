@@ -1,6 +1,32 @@
 import torch
 import torch.nn as nn
 import timm
+import warnings
+from torch.optim.lr_scheduler import _LRScheduler
+import math
+from typing import Any, Dict
+
+
+class SqrtLoss(nn.Module):
+    def __init__(self, beta=100, epsilon=1e-8):
+        super(SqrtLoss, self).__init__()
+        self.beta = beta
+        self.epsilon = epsilon
+
+    def forward(self, inputs, targets):
+        """
+        计算基于平方根的损失。
+
+        Args:
+            input (torch.Tensor): 模型的预测值。
+            target (torch.Tensor): 真实值。
+
+        Returns:
+            torch.Tensor: 计算得到的损失值（标量）。
+        """
+        error = targets - inputs
+        loss = self.beta * torch.pow(torch.abs(error) / self.beta + self.epsilon, 0.5)
+        return loss.mean()
 
 
 def get_outnorm(x: torch.Tensor, out_norm: str = "") -> torch.Tensor:
@@ -47,13 +73,20 @@ class CharbonnierLoss(nn.Module):
 
 
 class LPIPS(nn.Module):
-    def __init__(self, weights=[0.2, 0.4, 0.3, 0.1]):  # 示例权重
+    def __init__(self, model_name, pretrained=False, weights=None):  # 示例权重
         super(LPIPS, self).__init__()
         self.feature_net = timm.create_model(
-            "rdnet_base.nv_in1k", pretrained=True, features_only=True
+            model_name,  # swinv2_large_window12to16_192to256.ms_in22k_ft_in1k
+            pretrained=pretrained,
+            features_only=True,
         )
-        self.l1loss = nn.L1Loss()  # 换成 L1 损失
-        self.weights = weights  # 不同层的权重
+        if weights is None:
+            channels_len = len(self.feature_net.feature_info.channels())
+            weights = [(channels_len - i) * 0.1 for i in range(channels_len)]
+        self.l1loss = nn.L1Loss()
+        self.weights = weights
+        for param in self.parameters():
+            param.requires_grad = False
 
     @torch.no_grad()
     def forward(self, x, y):
@@ -78,8 +111,51 @@ class LPIPS(nn.Module):
         return loss
 
 
+class SemanticLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.semantic_model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
+
+    @torch.no_grad()
+    def forward(self, x, y):
+        f_x = self.semantic_model(x)
+        f_y = self.semantic_model(y)
+        return torch.nn.functional.l1_loss(f_x, f_y)
+
+
+class CustomLRScheduler(_LRScheduler):
+    def __init__(self, optimizer, total_steps, last_epoch=-1):
+        self.epochs = total_steps
+        # 定义里程碑
+        self.milestone1 = int(total_steps * 0.01)
+        self.milestone2 = int(total_steps * 0.66)
+        self.milestone3 = int(total_steps * 0.95)
+        self.milestone4 = int(total_steps * 0.98)
+
+        super(CustomLRScheduler, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch < self.milestone1:
+            # 线性上升
+            scale = (self.last_epoch + 1) / self.milestone1
+            return [base_lr * scale for base_lr in self.base_lrs]
+        elif self.last_epoch < self.milestone2:
+            # 保持不变
+            return self.base_lrs
+        elif self.last_epoch < self.milestone3:
+            # 指数衰减
+            decay_epochs = self.milestone3 - self.milestone2
+            current_decay_epoch = self.last_epoch - self.milestone2
+            scale = 0.1 ** (current_decay_epoch / decay_epochs)
+            return [base_lr * scale for base_lr in self.base_lrs]
+        elif self.last_epoch < self.milestone4:
+            return [base_lr * 0.1 for base_lr in self.base_lrs]
+        else:
+            return [base_lr * 0.1 / 3 for base_lr in self.base_lrs]
+
+
 if __name__ == "__main__":
     x = torch.randn(2, 3, 256, 256)
     y = torch.randn(2, 3, 256, 256)
-    loss = lpips()
+    loss = SemanticLoss()
     print(loss(x, y))

@@ -35,8 +35,8 @@ if __name__ == "__main__":
 
     trainer = pl.Trainer(
         accelerator="auto",
-        devices=[opt.devices],
-        strategy="auto",
+        devices=[4, 5],
+        strategy="ddp_find_unused_parameters_true",
         max_epochs=opt.epochs,
         default_root_dir="./",
         deterministic=False,
@@ -49,8 +49,8 @@ if __name__ == "__main__":
                 dirpath="./checkpoints/" + opt.exp_name,
                 monitor="valid_psnr",
                 mode="max",
-                save_top_k=1,
-                save_last=True,
+                save_top_k=2,
+                save_last=False,
                 filename="{epoch}-{valid_psnr:.4f}",
             ),
         ],

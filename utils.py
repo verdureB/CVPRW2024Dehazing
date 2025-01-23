@@ -1,10 +1,41 @@
 import torch
 import torch.nn as nn
 import timm
-import warnings
-from torch.optim.lr_scheduler import _LRScheduler
-import math
-from typing import Any, Dict
+
+
+class SmoothFocalL1Loss(nn.Module):
+    def __init__(
+        self,
+        gamma_small=0.5,
+        gamma_large=2.0,
+        threshold=1.0,
+        beta=0.5,
+        reduction="mean",
+    ):
+        super(SmoothFocalL1Loss, self).__init__()
+        self.gamma_small = gamma_small
+        self.gamma_large = gamma_large
+        self.threshold = threshold
+        self.beta = beta  # 控制过渡的平滑程度
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        l1_loss = torch.abs(input - target)
+
+        # 使用 sigmoid 函数实现平滑过渡
+        sigmoid = 1 / (1 + torch.exp(-self.beta * (l1_loss - self.threshold)))
+        gamma = sigmoid * (self.gamma_large - self.gamma_small) + self.gamma_small
+
+        loss = l1_loss * (l1_loss**gamma)
+
+        if self.reduction == "none":
+            return loss
+        elif self.reduction == "mean":
+            return torch.mean(loss)
+        elif self.reduction == "sum":
+            return torch.sum(loss)
+        else:
+            raise NotImplementedError
 
 
 class SqrtLoss(nn.Module):
@@ -112,9 +143,9 @@ class LPIPS(nn.Module):
 
 
 class SemanticLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, lpips_net):
         super().__init__()
-        self.semantic_model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
+        self.semantic_model = torch.hub.load("facebookresearch/dinov2", lpips_net)
 
     @torch.no_grad()
     def forward(self, x, y):
@@ -123,35 +154,18 @@ class SemanticLoss(nn.Module):
         return torch.nn.functional.l1_loss(f_x, f_y)
 
 
-class CustomLRScheduler(_LRScheduler):
-    def __init__(self, optimizer, total_steps, last_epoch=-1):
-        self.epochs = total_steps
-        # 定义里程碑
-        self.milestone1 = int(total_steps * 0.01)
-        self.milestone2 = int(total_steps * 0.66)
-        self.milestone3 = int(total_steps * 0.95)
-        self.milestone4 = int(total_steps * 0.98)
+class DINOv2DNet(nn.Module):
+    def __init__(self, dnet_net):
+        super().__init__()
+        self.semantic_model = torch.hub.load("facebookresearch/dinov2", dnet_net)
+        for param in self.semantic_model.parameters():
+            param.requires_grad = False
+        self.fc = nn.Linear(1024, 1)
 
-        super(CustomLRScheduler, self).__init__(optimizer, last_epoch)
-
-    def get_lr(self):
-        if self.last_epoch < self.milestone1:
-            # 线性上升
-            scale = (self.last_epoch + 1) / self.milestone1
-            return [base_lr * scale for base_lr in self.base_lrs]
-        elif self.last_epoch < self.milestone2:
-            # 保持不变
-            return self.base_lrs
-        elif self.last_epoch < self.milestone3:
-            # 指数衰减
-            decay_epochs = self.milestone3 - self.milestone2
-            current_decay_epoch = self.last_epoch - self.milestone2
-            scale = 0.1 ** (current_decay_epoch / decay_epochs)
-            return [base_lr * scale for base_lr in self.base_lrs]
-        elif self.last_epoch < self.milestone4:
-            return [base_lr * 0.1 for base_lr in self.base_lrs]
-        else:
-            return [base_lr * 0.1 / 3 for base_lr in self.base_lrs]
+    def forward(self, image):
+        f = self.semantic_model(image)
+        pred = self.fc(f)
+        return pred
 
 
 if __name__ == "__main__":

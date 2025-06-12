@@ -157,6 +157,7 @@ class mscheadv5(nn.Module):
     def __init__(self, in_channels):
         super(mscheadv5, self).__init__()
         self.in_channels = in_channels
+        # inchannel  outchannel kernel_size stride padding
         self.head1 = nn.Conv2d(in_channels, in_channels, 1, 1, 0)
         self.head2 = nn.Conv2d(in_channels, in_channels, 3, 1, 1)
         self.head3 = nn.Conv2d(in_channels, in_channels, 5, 1, 2)
@@ -202,9 +203,11 @@ class ConvNeXt(nn.Module):
             self.downsample_layers.append(downsample_layer)
 
         self.stages = nn.ModuleList()
+        # 全是0，主要看drop_path_rate是多少才看
         dpath_rates = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
         dpout_rates = [x.item() for x in torch.linspace(0, drop_out_rate, sum(depths))]
         cur = 0
+        # j层的stage，每个stage包含depths[i}个block，总共有i块 j层
         for i in range(3):
             stage = nn.Sequential(
                 *[
@@ -221,12 +224,14 @@ class ConvNeXt(nn.Module):
             cur += depths[i]
 
     def forward(self, x):
+        # B,3,H,W -> B,256,H/4,W/4
         x_layer1 = self.downsample_layers[0](x)
+        # 进入第一个3层的stage，  B,256,H/4,W/4
         x_layer1 = self.stages[0](x_layer1)
-
+        # 下采样   B,512,H/8,W/8
         x_layer2 = self.downsample_layers[1](x_layer1)
         x_layer2 = self.stages[1](x_layer2)
-
+        # 下采样   B,512,H/16,W/16
         x_layer3 = self.downsample_layers[2](x_layer2)
         out = self.stages[2](x_layer3)
 
@@ -244,9 +249,11 @@ class Block(nn.Module):
         drop_path (float): Stochastic depth rate. Default: 0.0
         layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
     """
+    # 就是正常的dw + pw +dropout，通道维度在中间先变大 然后再变成原来的
 
     def __init__(self, dim, drop_out=0.0, drop_path=0.0, layer_scale_init_value=1e-6):
         super().__init__()
+        #大核卷积，depthwise卷积
         self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
         self.norm = LayerNorm(dim, eps=1e-6)
         self.pwconv1 = nn.Linear(dim, 4 * dim)
@@ -258,21 +265,32 @@ class Block(nn.Module):
             else None
         )
         self.drop_out = nn.Dropout(drop_out)
+        # DropPath 是一种随机丢弃路径的正则化方法，类似于Dropout，但它在训练期间随机丢弃整个层的输出，而不是单个神经元。
+        # 这有助于减少过拟合并提高模型的泛化能力。
+        # drop_path_rate 是一个介于0和1之间的值，表示在训练期间随机丢弃路径的概率。即对于B,C,H,W的输入，drop_path_rate=0.2且drop_path(x)表示有20%的概率会丢弃x。且这里的百分之20概率是对每个样本而言的
+        # 也就是B个样本都有可能被丢弃，或者乘以一个1/pro的概率
+
+        # 如果drop_path_rate大于0，则使用DropPath，否则使用nn.Identity()，即不进行路径丢弃。
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
         inputs = x
+        #深度分离卷积
         x = self.dwconv(x)
         x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
+        # 沿着通道归一化
         x = self.norm(x)
+        # 利用linear 实现1*1的卷积
         x = self.pwconv1(x)
+        # 激活函数
         x = self.act(x)
         x = self.drop_out(x)
+        # 利用linear 实现1*1的卷积
         x = self.pwconv2(x)
         if self.gamma is not None:
             x = self.gamma * x
         x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
-
+        # 残差
         x = inputs + self.drop_path(x)
         return x
 
@@ -321,7 +339,7 @@ class PALayer(nn.Module):
         y = self.pa(x)
         return x * y
 
-
+#ECA的CA实现
 class CALayer(nn.Module):
     def __init__(self, channel, bias=False):
         super(CALayer, self).__init__()
@@ -357,6 +375,7 @@ class CP_Attention_block(nn.Module):
 class knowledge_adaptation_convnext(nn.Module):
     def __init__(self, bias):
         super(knowledge_adaptation_convnext, self).__init__()
+        # 就是 3 ，3 ，27， 3 个block块，每个block块的输出通道数分别是256，512，1024，2048
         self.encoder = ConvNeXt(
             Block,
             in_chans=3,
@@ -384,6 +403,7 @@ class knowledge_adaptation_convnext(nn.Module):
         self.attention4 = CP_Attention_block(default_conv, 28, 5, bias)
 
     def forward(self, inputs):
+        # 先进一个ConvNext  ，输入大小是384的图
         x_layer1, x_layer2, x_output = self.encoder(inputs)
 
         x_mid = self.attention0(x_output)  # [1024,24,24]
@@ -409,8 +429,8 @@ class convnext_plus_head(nn.Module):
     def __init__(self, bias=False):
         super(convnext_plus_head, self).__init__()
         self.convnext_branch = knowledge_adaptation_convnext(bias=bias)
-        # self.segmentation_head1 = mscheadv5(28)
-        self.segmentation_head1 = nn.Sequential(nn.Conv2d(28, 3, 3, 1, 1), nn.Tanh())
+        self.segmentation_head1 = mscheadv5(28)
+        #self.segmentation_head1 = nn.Sequential(nn.Conv2d(28, 3, 3, 1, 1), nn.Tanh())
         # self.segmentation_head2 = MST_Plus_Plus(3, 3, 30, 1)
 
     def forward(self, inputs):
